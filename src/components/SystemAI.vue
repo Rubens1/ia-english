@@ -1,36 +1,58 @@
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue';
 import { Icon } from '@iconify/vue';
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import OpenAI from 'openai';
 
 // Inicializando a API do Google Generative AI
-const genAI = new GoogleGenerativeAI("AIzaSyDMFQEfDkG4iWpZbxaNeDgjRcCyVaoxQqQ");
-const model = genAI.getGenerativeModel({ 
-  model: 'gemini-1.5-flash',  // Novo nome do modelo
-  apiVersion: 'v1'         // Versão mais recente da API
+const genAI = new GoogleGenerativeAI("");
+const model = genAI.getGenerativeModel({
+    model: 'gemini-1.5-flash',  // Novo nome do modelo
+    apiVersion: 'v1'         // Versão mais recente da API
 });
+
+const openai = new OpenAI({
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKey: '',
+    dangerouslyAllowBrowser: true,
+});
+
+const mainOpenAI = async (texto) => {
+    try {
+        const completion = await openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: [{ role: "user", content: texto }],
+        });
+
+        return completion.choices[0].message.content;
+    } catch (error) {
+        console.error("Erro ao iniciar a conversa com a AI: ", error);
+        throw error;
+    }
+}
+
 const mainGoogle = async (texto) => {
-  try {
-    const userMessage = { role: "user", parts: [{ text: texto }] };
-    const modelResponse = { role: "model", parts: [{ text: "Eu estou aprendnedo inglês e preciso que você me ajuda com a pronuncia." }] };
-    
-    const chat = model.startChat({
-      history: [userMessage, modelResponse],
-      generationConfig: {
-        maxOutputTokens: 100,
-      },
-    });
+    try {
+        const userMessage = { role: "user", parts: [{ text: texto }] };
+        const modelResponse = { role: "model", parts: [{ text: "Eu estou aprendnedo inglês e preciso que você me ajuda com a pronuncia." }] };
 
-    const result = await chat.sendMessage(texto);
-    const response = await result.response;
-    const text = response.text();
+        const chat = model.startChat({
+            history: [userMessage, modelResponse],
+            generationConfig: {
+                maxOutputTokens: 100,
+            },
+        });
 
-    return text;
+        const result = await chat.sendMessage(texto);
+        const response = await result.response;
+        const text = response.text();
 
-  } catch (error) {
-    console.error("Erro ao iniciar a conversa com a AI: ", error);
-    throw error;
-  }
+        return text;
+
+    } catch (error) {
+        console.error("Erro ao iniciar a conversa com a AI: ", error);
+        throw error;
+    }
 };
 
 const isRecording = ref(false);
@@ -41,40 +63,63 @@ const isTyping = ref(false);
 const selectedLanguage = ref('en-US');
 const voices = ref([]);
 const synth = ref(null);
+const selectedAi = ref('google');
 
 const SUPPORTED_LANGUAGES = [
-  { code: 'en-US', name: 'English' },
-  { code: 'pt-BR', name: 'Português' },
-  { code: 'es-ES', name: 'Español' },
-  { code: 'fr-FR', name: 'Français' }
+    { code: 'en-US', name: 'English' },
+    { code: 'pt-BR', name: 'Português' },
+    { code: 'es-ES', name: 'Español' },
+    { code: 'fr-FR', name: 'Français' }
 ];
 
+const IA = [
+    { name: 'Google', type: 'google', execute: mainGoogle },
+    { name: 'OpenAI', type: 'openai', execute: mainOpenAI }
+];
 // Configurações do chat
 const CHAT_DELAY_PER_CHAR = 30;
 
 onMounted(() => {
-  if ('speechSynthesis' in window) {
-    synth.value = window.speechSynthesis;
-    const updateVoices = () => {
-      voices.value = synth.value.getVoices();
-    };
-    synth.value.onvoiceschanged = updateVoices;
-    updateVoices();
-  }
+    if ('speechSynthesis' in window) {
+        synth.value = window.speechSynthesis;
+        const updateVoices = () => {
+            voices.value = synth.value.getVoices();
+        };
+        synth.value.onvoiceschanged = updateVoices;
+        updateVoices();
+    }
 });
 
+// Modifique a função speakText para:
 function speakText(text) {
-    if (!synth.value) return;
+    if (!synth.value || !text) return;
 
-const utterance = new SpeechSynthesisUtterance(text);
-const voice = voices.value.find(v => v.lang === selectedLanguage.value);
+    // Espera as vozes estarem disponíveis
+    const voicesReady = () => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        const voice = voices.value.find(v => v.lang === selectedLanguage.value);
 
-if (voice) {
-  utterance.voice = voice;
-  utterance.lang = selectedLanguage.value;
-  synth.value.speak(utterance);
-}
+        // Fallback para primeira voz disponível
+        utterance.voice = voice || voices.value[0];
+        utterance.lang = selectedLanguage.value;
 
+        // Para qualquer fala anterior
+        synth.value.cancel();
+
+        // Adiciona tratamento de erro
+        utterance.onerror = (error) => {
+            console.error('Erro na síntese de voz:', error);
+        };
+
+        synth.value.speak(utterance);
+    };
+
+    // Força atualização das vozes se necessário
+    if (synth.value.getVoices().length === 0) {
+        synth.value.onvoiceschanged = voicesReady;
+    } else {
+        voicesReady();
+    }
 }
 
 function sendMessage() {
@@ -94,27 +139,47 @@ function addUserMessage(text) {
     scrollToBottom();
 }
 
+
 async function simulateResponse(userMessage) {
-    isTyping.value = true;
-    scrollToBottom();
-    
-    const delay = Math.max(1000, userMessage.length * CHAT_DELAY_PER_CHAR);
-    await new Promise(resolve => setTimeout(resolve, delay));
-    
-    const responseFromAI = await mainGoogle(userMessage);
-    messages.value.push({
-        id: Date.now() + 1,
-        sender: 'assistant',
-        text: responseFromAI
-    });
-    
-    isTyping.value = false;
-    scrollToBottom();
-    speakText(responseFromAI);
+    try {
+        isTyping.value = true;
+        scrollToBottom();
+
+        const delay = Math.max(1000, userMessage.length * CHAT_DELAY_PER_CHAR);
+        await new Promise(resolve => setTimeout(resolve, delay));
+
+        const response = await generateResponse(userMessage);
+
+        messages.value.push({
+            id: Date.now() + 1,
+            sender: 'assistant',
+            text: response
+        });
+
+        scrollToBottom();
+        isTyping.value = false;
+        speakText(response);
+    } catch (error) {
+        console.error("Erro na simulação:", error);
+        messages.value.push({
+            id: Date.now() + 1,
+            sender: 'assistant',
+            text: "Desculpe, ocorreu um erro ao processar sua mensagem"
+        });
+    }
 }
 
+async function generateResponse(userMessage) {
+    let responseFromAI;
+    if (selectedAi.value === 'google') {
+        responseFromAI = await mainGoogle(userMessage);
+    } else {
+        responseFromAI = await mainOpenAI(userMessage);
+    }
+    return responseFromAI;
+}
 
-const microphoneIcon = computed(() => 
+const microphoneIcon = computed(() =>
     isRecording.value ? 'mdi:microphone-off' : 'mdi:microphone'
 );
 
@@ -153,6 +218,11 @@ function stopRecording() {
         recognition.value.stop();
         isRecording.value = false;
     }
+
+    if (synth.value && currentUtterance.value) {
+        synth.value.cancel();
+        currentUtterance.value = null;
+    }
 }
 
 function scrollToBottom() {
@@ -163,22 +233,24 @@ function scrollToBottom() {
         }
     });
 }
-
 </script>
 
 <template>
     <div class="chat-container">
         <div class="language-selector">
-      <select v-model="selectedLanguage">
-        <option 
-          v-for="lang in SUPPORTED_LANGUAGES" 
-          :key="lang.code" 
-          :value="lang.code"
-        >
-          {{ lang.name }}
-        </option>
-      </select>
-    </div>
+            <select v-model="selectedLanguage">
+                <option v-for="lang in SUPPORTED_LANGUAGES" :key="lang.code" :value="lang.code">
+                    {{ lang.name }}
+                </option>
+            </select>
+        </div>
+        <div class="language-selector">
+            <select v-model="selectedAi">
+                <option v-for="ia in IA" :key="ia.type" :value="ia.type">
+                    {{ ia.name }}
+                </option>
+            </select>
+        </div>
         <div class="chat-messages">
             <div v-for="message in messages" :key="message.id"
                 :class="message.sender === 'user' ? 'chat-message user' : 'chat-message assistant'">
@@ -191,8 +263,7 @@ function scrollToBottom() {
             <button @click="sendMessage">
                 <Icon icon="tabler:send" width="24" height="24" />
             </button>
-            <button @click="isRecording ? stopRecording() : startRecording()" 
-                    :class="{ 'recording': isRecording }">
+            <button @click="isRecording ? stopRecording() : startRecording()" :class="{ 'recording': isRecording }">
                 <Icon :icon="microphoneIcon" width="24" height="24" />
                 {{ isRecording ? 'Parar' : 'Falar' }}
             </button>
@@ -202,16 +273,17 @@ function scrollToBottom() {
 
 <style scoped>
 .language-selector {
-  margin-bottom: 1rem;
+    margin-bottom: 1rem;
 }
 
 .language-selector select {
-  padding: 8px 12px;
-  border-radius: 4px;
-  border: 1px solid #ccc;
-  background-color: white;
+    padding: 8px 12px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    background-color: white;
 }
-.audio-preview{
+
+.audio-preview {
     display: none;
 }
 
@@ -223,7 +295,7 @@ function scrollToBottom() {
 }
 
 button.recording {
-    background: #f44336;
+    background-color: #f44336 !important;
     animation: pulse 1.5s infinite;
 }
 
